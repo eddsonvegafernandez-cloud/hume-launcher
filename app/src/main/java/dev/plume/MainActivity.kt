@@ -438,6 +438,8 @@ class MainActivity : Activity() {
         ready = true
         setContentView(R.layout.activity_main)
         if (!prefs.contains("weather")) prefs.edit().putString("weather", "c").apply() // the forecast is on from the start
+        if (!prefs.contains("geo_lat")) prefs.edit().putBoolean("geo_manual", true).putString("geo_city", "Pachacámac")
+            .putFloat("geo_lat", -12.2297f).putFloat("geo_lon", -76.8725f).apply() // starts in Pachacámac, Lima (change it in settings)
         glass = GlassLayer(this)
         findViewById<ViewGroup>(R.id.root).addView(glass, 5, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         videoWallpaper = VideoWallpaper(findViewById<SurfaceView>(R.id.videoWallpaper),
@@ -1102,11 +1104,13 @@ class MainActivity : Activity() {
         findViewById<TextClock>(R.id.clock).apply {
             format12Hour = time ?: "h:mm"
             format24Hour = time ?: "HH:mm"
+            timeZone = LIMA // the clock and the date follow Lima, whatever zone the TV is set to
         }
         val date = clockPattern(ClockFormat.DATE) ?: "EEE d MMM"
         findViewById<TextClock>(R.id.date).apply {
             format12Hour = date
             format24Hour = date
+            timeZone = LIMA
         }
     }
 
@@ -2453,7 +2457,7 @@ class MainActivity : Activity() {
 
     /** "Buenos días, Edd" from 5:00, "Buenas tardes" from 12:00, "Buenas noches" from 19:00 (and until 5:00). */
     private fun updateGreeting() {
-        val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+        val hour = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone(LIMA)).get(java.util.Calendar.HOUR_OF_DAY)
         val text = when (hour) {
             in 5..11 -> R.string.greeting_morning
             in 12..18 -> R.string.greeting_afternoon
@@ -2523,8 +2527,8 @@ class MainActivity : Activity() {
         }
         // Streaming apps that publish nothing: their popular titles from TMDB, when a key is set (Wallpaper settings).
         val key = Tmdb.key(this)
-        if (key != null) for ((pkg, provider) in STREAMING) {
-            val app = labels[pkg] ?: continue
+        if (key != null) for ((pkg, app) in labels) {
+            val provider = providerFor(pkg, app) ?: continue
             val list = perApp.getOrPut(pkg) { ArrayList() }
             if (list.size >= 8) continue
             try {
@@ -2542,6 +2546,20 @@ class MainActivity : Activity() {
             i++
         }
         return out
+    }
+
+    /** The TMDB catalog that goes with an installed app: by package, else by its name. 0 means "popular overall"; null, none. */
+    private fun providerFor(pkg: String, label: String): Int? {
+        STREAMING[pkg]?.let { return it }
+        val n = label.lowercase()
+        return when {
+            "netflix" in n || "netfly" in n || "netmirror" in n -> 8
+            "apple tv" in n -> 350
+            "prime video" in n -> 119
+            "disney" in n -> 337
+            "xuper" in n || "wintv" in n || "win tv" in n -> 0
+            else -> null
+        }
     }
 
     private fun showHero() {
@@ -6136,28 +6154,17 @@ class MainActivity : Activity() {
         view.post { fitInk() }
     }
 
-    /** "Nublado · Máx. 24° / Mín. 20°", and under it the next three days: "Mañana 25°/19° · sáb 24°/20° · dom 23°/19°". */
+    /** Tomorrow only: "Mañana: Nublado · Máx. 24° / Mín. 20°". */
     private fun showForecast(fahrenheit: Boolean) {
         val view = findViewById<TextView>(R.id.forecast)
-        val days = prefs.getString("wx_fc", "").orEmpty().split(";").filter { it.isNotBlank() }.mapNotNull { row ->
-            val f = row.split(",")
-            if (f.size < 4) null else try { arrayOf(f[0], f[1], f[2], f[3]) } catch (e: Exception) { null }
-        }
-        if (days.isEmpty()) {
+        val days = prefs.getString("wx_fc", "").orEmpty().split(";").filter { it.isNotBlank() }.map { it.split(",") }.filter { it.size >= 4 }
+        if (days.size < 2) {
             view.visibility = View.GONE
             return
         }
         fun t(c: String) = Math.round(c.toFloat().let { if (fahrenheit) it * 9 / 5 + 32 else it })
-        val today = days[0]
-        val first = getString(R.string.forecast_today, weatherWord(today[1].toInt()), t(today[2]), t(today[3]))
-        val parse = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.ROOT)
-        val dayName = java.text.SimpleDateFormat("EEE", java.util.Locale("es"))
-        val next = days.drop(1).mapIndexed { i, d ->
-            val name = if (i == 0) getString(R.string.forecast_tomorrow) else
-                try { dayName.format(parse.parse(d[0])!!) } catch (e: Exception) { "" }
-            "$name ${t(d[2])}°/${t(d[3])}°"
-        }.joinToString(" · ")
-        view.text = if (next.isEmpty()) first else first + "\n" + next
+        val tomorrow = days[1]
+        view.text = getString(R.string.forecast_tomorrow_full, weatherWord(tomorrow[1].toInt()), t(tomorrow[2]), t(tomorrow[3]))
         view.visibility = View.VISIBLE
     }
 
@@ -7145,6 +7152,7 @@ class MainActivity : Activity() {
         const val CHOSEN = "✓"
         const val REPO = "aradhyas8/Plume_Launcher"
         const val UPDATES_ON = false
+        const val LIMA = "America/Lima"
         const val RECO_REGION = "PE" // where "popular now" is measured
         const val RECO_LANGUAGE = "es-MX"
         /** Streaming apps on Android TV -> their id at TMDB (watch providers). Only the ones installed are used. */

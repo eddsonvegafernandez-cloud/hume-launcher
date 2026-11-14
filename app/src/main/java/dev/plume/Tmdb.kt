@@ -78,8 +78,10 @@ internal object Tmdb {
     fun popular(provider: Int, region: String, key: String, language: String): List<Pick> {
         val out = ArrayList<Pick>()
         for (type in listOf("movie", "tv")) {
-            val results = request("discover/$type?with_watch_providers=$provider&watch_region=$region" +
-                "&with_watch_monetization_types=flatrate&sort_by=popularity.desc&include_adult=false&language=$language", key)
+            // provider 0: no catalog of its own (apps such as Xuper), so what is popular in the region overall
+            val only = if (provider > 0) "&with_watch_providers=$provider&watch_region=$region&with_watch_monetization_types=flatrate"
+                else "&watch_region=$region"
+            val results = request("discover/$type?sort_by=popularity.desc&include_adult=false&language=$language$only", key)
                 ?.optJSONArray("results") ?: throw IOException("TMDB rejected the key")
             for (i in 0 until minOf(results.length(), 8)) {
                 val item = results.getJSONObject(i)

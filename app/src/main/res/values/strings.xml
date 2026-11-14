@@ -391,6 +391,9 @@
     <string name="greeting_afternoon">Good afternoon, %1$s</string>
     <string name="greeting_evening">Good evening, %1$s</string>
     <string name="hero_label">Recommended app</string>
+    <string name="hero_label_in">Recommended in %1$s</string>
+    <string name="forecast_today">%1$s · High %2$d° / Low %3$d°</string>
+    <string name="forecast_tomorrow">Tomorrow</string>
     <string name="help_wp_sources">The apps whose shows can become the wallpaper. Plume uses wide pictures only.</string>
     <string name="section_style">Style</string>
     <string name="group_home_screen">Home screen</string>

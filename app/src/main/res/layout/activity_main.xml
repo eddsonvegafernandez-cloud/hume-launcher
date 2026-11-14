@@ -27,6 +27,22 @@
         android:importantForAccessibility="no"
         android:scaleType="centerCrop" />
 
+    <!-- Recommended art from the apps' own channels, over the wallpaper while a recommendation is on. -->
+    <ImageView
+        android:id="@+id/heroArt"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:importantForAccessibility="no"
+        android:scaleType="centerCrop"
+        android:visibility="gone" />
+
+    <View
+        android:id="@+id/heroScrim"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:importantForAccessibility="no"
+        android:visibility="gone" />
+
     <LinearLayout
         android:id="@+id/content"
         android:layout_width="match_parent"
@@ -106,6 +122,19 @@
                         android:visibility="gone" />
                 </LinearLayout>
 
+                <!-- Today's condition with high and low, then the next days. -->
+                <TextView
+                    android:id="@+id/forecast"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:ellipsize="end"
+                    android:fontFamily="sans-serif"
+                    android:maxLines="2"
+                    android:maxWidth="560dp"
+                    android:textSize="14sp"
+                    android:visibility="gone" />
+
                 <!-- "Featured: a show". Only with the Shows wallpaper: the show whose picture is on screen. -->
                 <TextView
                     android:id="@+id/featured"
@@ -136,6 +165,8 @@
                     android:id="@+id/hero"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
+                    android:clickable="true"
+                    android:focusable="true"
                     android:layout_marginTop="2dp"
                     android:drawablePadding="12dp"
                     android:ellipsize="end"
@@ -144,6 +175,16 @@
                     android:maxLines="1"
                     android:maxWidth="560dp"
                     android:textSize="30sp"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/heroDots"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:alpha="0.8"
+                    android:maxLines="1"
+                    android:textSize="12sp"
                     android:visibility="gone" />
             </LinearLayout>
 

@@ -308,6 +308,9 @@
     <string name="greeting_afternoon">Buenas tardes, %1$s</string>
     <string name="greeting_evening">Buenas noches, %1$s</string>
     <string name="hero_label">App recomendada</string>
+    <string name="hero_label_in">Recomendado en %1$s</string>
+    <string name="forecast_today">%1$s · Máx. %2$d° / Mín. %3$d°</string>
+    <string name="forecast_tomorrow">Mañana</string>
     <string name="clock_small">Pequeño</string>
     <string name="clock_medium">Mediano</string>
     <string name="clock_large">Grande</string>

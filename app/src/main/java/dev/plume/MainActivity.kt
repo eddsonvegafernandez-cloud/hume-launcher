@@ -298,6 +298,14 @@ internal fun <T> preferTvApps(tv: List<T>, other: List<T>, pkg: (T) -> String) =
 
 class MainActivity : Activity() {
 
+    /** This launcher is always in Spanish, whatever language the TV is set to. */
+    override fun attachBaseContext(base: Context) {
+        val es = java.util.Locale("es")
+        java.util.Locale.setDefault(es)
+        val config = android.content.res.Configuration(base.resources.configuration).apply { setLocale(es) }
+        super.attachBaseContext(base.createConfigurationContext(config))
+    }
+
     /**
      * An app's icon is loaded once, but not held: the mono mark and the accent colour are made from it and kept, and a
      * tile that shows the icon holds its own copy, so ~20 launcher icons (up to a megabyte each) need not stay in memory.
@@ -429,8 +437,9 @@ class MainActivity : Activity() {
         }
         ready = true
         setContentView(R.layout.activity_main)
+        if (!prefs.contains("weather")) prefs.edit().putString("weather", "c").apply() // the forecast is on from the start
         glass = GlassLayer(this)
-        findViewById<ViewGroup>(R.id.root).addView(glass, 3, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        findViewById<ViewGroup>(R.id.root).addView(glass, 5, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         videoWallpaper = VideoWallpaper(findViewById<SurfaceView>(R.id.videoWallpaper),
             { findViewById<ImageView>(R.id.wallpaper).alpha = 0f },
             { findViewById<ImageView>(R.id.wallpaper).alpha = 1f; if (resumed) toast(getString(R.string.video_cannot_play), long = true) })
@@ -1118,7 +1127,7 @@ class MainActivity : Activity() {
         findViewById<TextView>(R.id.clock).typeface = clockFace()
         findViewById<TextView>(R.id.clock).textSize = clockSize().toFloat()
         applyClockFormats()
-        for (id in intArrayOf(R.id.clock, R.id.date, R.id.appsTitle, R.id.watchTitle, R.id.allAppsTitle, R.id.rowLabel, R.id.weather, R.id.featured, R.id.greeting, R.id.heroLabel, R.id.hero)) {
+        for (id in intArrayOf(R.id.clock, R.id.date, R.id.appsTitle, R.id.watchTitle, R.id.allAppsTitle, R.id.rowLabel, R.id.weather, R.id.featured, R.id.greeting, R.id.heroLabel, R.id.hero, R.id.heroDots, R.id.forecast)) {
             findViewById<TextView>(id).setTextColor(fg)
         }
         iconInk = fg
@@ -1142,11 +1151,12 @@ class MainActivity : Activity() {
         .map { findViewById<ImageView>(it) }
 
     private fun fitInk() {
-        val top = listOf(R.id.clock, R.id.date, R.id.weather, R.id.featured, R.id.greeting, R.id.heroLabel, R.id.hero).map { findViewById<TextView>(it) }
-        val topInk = inkBehind(top)
+        val top = listOf(R.id.clock, R.id.date, R.id.weather, R.id.featured, R.id.greeting, R.id.heroLabel, R.id.hero, R.id.heroDots, R.id.forecast).map { findViewById<TextView>(it) }
+        val art = heroArtOn() // light text over the art and its dark scrim
+        val topInk = if (art) Color.WHITE else inkBehind(top)
         for (v in top) ink(v, topInk, fade = true)
         val icons = topIcons()
-        iconInk = inkBehind(icons)
+        iconInk = if (art) Color.WHITE else inkBehind(icons)
         for (v in icons) {
             if (!v.isFocused) v.setColorFilter(iconInk)
             iconShadow(v)
@@ -1154,12 +1164,12 @@ class MainActivity : Activity() {
         val names = findViewById<LinearLayout>(R.id.nameRow).let { row -> (0 until row.childCount).map { row.getChildAt(it) as TextView } }
         val apps = listOf(findViewById<TextView>(R.id.appsTitle)) + names
         // Measured over the whole row, so the On focus name keeps one colour as it moves from tile to tile.
-        appsInk = inkBehind(apps + findViewById<View>(R.id.appScroll))
+        appsInk = if (art) Color.WHITE else inkBehind(apps + findViewById<View>(R.id.appScroll))
         for (v in apps) ink(v, appsInk, fade = true)
         ink(findViewById(R.id.rowLabel), appsInk, fade = true)
         val cols = (0 until watchRow.childCount).map { watchRow.getChildAt(it) as ViewGroup }
         val watch = listOf(watchTitle) + cols.flatMap { col -> (0 until col.childCount).mapNotNull { col.getChildAt(it) as? TextView } }
-        watchInk = inkBehind(watch)
+        watchInk = if (art) Color.WHITE else inkBehind(watch)
         for (v in watch) ink(v, watchInk, fade = true)
         // The progress bar and the source mark go with the card's text.
         for (col in cols) for (i in 0 until col.childCount) when (val v = col.getChildAt(i)) {
@@ -2451,26 +2461,114 @@ class MainActivity : Activity() {
         findViewById<TextView>(R.id.greeting).text = getString(text, getString(R.string.owner_name))
     }
 
-    private var heroOrder = emptyList<String>() // packages of the installed apps, in the order they come up
-    private var heroAt = 0
+    /** One recommendation: [image] is wide art an installed app published in one of its home-screen channels. */
+    private class Reco(val title: String, val image: String?, val intent: String?, val pkg: String, val app: String)
 
-    /** Cycles through the installed apps only (nothing from outside the TV), one at a time, with a crossfade. */
+    @Volatile private var recos = emptyList<Reco>()
+    @Volatile private var recosAt = 0L
+    private var recoAt = 0
+    private var heroOrder = emptyList<String>() // fallback: installed apps, when no app published art
+    private var heroAt = 0
+    private var heroOpen: (() -> Unit)? = null
+    private val heroArtCache = object : LruCache<String, Bitmap>(14 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: Bitmap) = value.byteCount
+    }
+
+    private fun heroArtOn() = findViewById<ImageView>(R.id.heroArt).visibility == View.VISIBLE
+
+    /** Cycles through the recommendations, one at a time, with a crossfade. Only the installed apps feed it. */
     private val heroTick = object : Runnable {
         override fun run() {
             updateGreeting()
+            refreshRecos()
             showHero()
             ui.removeCallbacks(this)
             ui.postDelayed(this, HERO_EVERY_MS)
         }
     }
 
+    /** Reads the apps' preview programs (their home-screen rows) off the UI thread, at most every 10 minutes. */
+    private fun refreshRecos() {
+        if (checkSelfPermission(TV_LISTINGS) != PackageManager.PERMISSION_GRANTED) return
+        if (System.currentTimeMillis() - recosAt < 10 * 60_000L) return
+        recosAt = System.currentTimeMillis()
+        val labels = apps.associate { it.pkg to it.label }
+        io.execute {
+            val found = try { queryRecos(labels) } catch (e: Exception) {
+                android.util.Log.w("Plume", "recommendations failed ($e)")
+                emptyList()
+            }
+            ui.post { if (!isDestroyed) { recos = found; recoAt = 0 } }
+        }
+    }
+
+    private fun queryRecos(labels: Map<String, String>): List<Reco> {
+        val skip = Regex("continue|continuar|seguir|watch next|resume", RegexOption.IGNORE_CASE)
+        val perApp = LinkedHashMap<String, MutableList<Reco>>()
+        for ((id, pkg, name) in appChannels()) {
+            val app = labels[pkg] ?: continue // an app that is not installed (or has no launcher icon) adds nothing
+            if (skip.containsMatchIn(name)) continue // those rows are Continue Watching, not recommendations
+            contentResolver.query(TvContract.buildPreviewProgramsUriForChannel(id), null, null, null, null)?.use { c ->
+                fun str(col: String) = c.getColumnIndex(col).let { if (it < 0 || c.isNull(it)) null else c.getString(it) }
+                fun num(col: String) = c.getColumnIndex(col).let { if (it < 0 || c.isNull(it)) 0L else c.getLong(it) }
+                while (c.moveToNext()) {
+                    if (str("browsable") == "0") continue
+                    val title = str("title") ?: continue
+                    val image = str("thumbnail_uri")
+                        ?: str("poster_art_uri")?.takeIf { ShowsWall.wide(false, num("poster_art_aspect_ratio").toInt()) }
+                        ?: continue // tall posters would be cropped to a strip
+                    val list = perApp.getOrPut(pkg) { ArrayList() }
+                    if (list.size < 5) list += Reco(title, image, str("intent_uri"), pkg, app)
+                }
+            }
+        }
+        // One app after another, so a single app with many rows cannot fill the whole carousel.
+        val lists = perApp.values.shuffled().map { it.shuffled() }
+        val out = ArrayList<Reco>()
+        var i = 0
+        while (out.size < 24 && lists.any { i < it.size }) {
+            for (l in lists) if (i < l.size) out += l[i]
+            i++
+        }
+        return out
+    }
+
     private fun showHero() {
         val label = findViewById<TextView>(R.id.heroLabel)
         val hero = findViewById<TextView>(R.id.hero)
+        val dots = findViewById<TextView>(R.id.heroDots)
+        val list = recos
         val installed = apps
+        if (list.isNotEmpty()) {
+            val r = list[recoAt % list.size]
+            recoAt++
+            val app = installed.firstOrNull { it.pkg == r.pkg }
+            val n = minOf(list.size, 8)
+            val at = (recoAt - 1) % list.size
+            val dotText = (0 until n).joinToString(" ") { if (it == at % n) "●" else "○" }
+            heroOpen = {
+                try {
+                    startActivity(Intent.parseUri(r.intent, Intent.URI_INTENT_SCHEME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                } catch (e: Exception) {
+                    app?.let { startActivity(it.launch) }
+                }
+            }
+            val image = r.image
+            if (image == null) return swapHero(getString(R.string.hero_label_in, r.app), r.title, dotText, app, null)
+            val cached = heroArtCache.get(image)
+            if (cached != null) return swapHero(getString(R.string.hero_label_in, r.app), r.title, dotText, app, cached)
+            posterIo.execute {
+                val bmp = try { decode(image, wide = 1280, config = Bitmap.Config.ARGB_8888) } catch (e: Exception) { null }
+                if (bmp != null) heroArtCache.put(image, bmp)
+                ui.post {
+                    if (!isDestroyed && resumed) swapHero(getString(R.string.hero_label_in, r.app), r.title, dotText, app, bmp)
+                }
+            }
+            return
+        }
+        // No app has published art: cycle through the installed apps, name and icon only.
         if (installed.isEmpty()) {
-            label.visibility = View.GONE
-            hero.visibility = View.GONE
+            for (v in listOf(label, hero, dots)) v.visibility = View.GONE
             return
         }
         val known = installed.map { it.pkg }.toSet()
@@ -2481,30 +2579,64 @@ class MainActivity : Activity() {
         val app = installed.firstOrNull { it.pkg == heroOrder[heroAt] }
         heroAt++
         if (app == null) return
+        heroOpen = { startActivity(app.launch) }
+        swapHero(getString(R.string.hero_label), app.label, "", app, null)
+    }
+
+    /** Puts the next recommendation on screen: the art fades in behind the text, the text fades out and in. */
+    private fun swapHero(labelText: String, title: String, dotText: String, app: App?, art: Bitmap?) {
+        val label = findViewById<TextView>(R.id.heroLabel)
+        val hero = findViewById<TextView>(R.id.hero)
+        val dots = findViewById<TextView>(R.id.heroDots)
+        val artView = findViewById<ImageView>(R.id.heroArt)
+        val scrim = findViewById<View>(R.id.heroScrim)
         val first = hero.visibility != View.VISIBLE
         fun apply() {
-            label.text = getString(R.string.hero_label)
-            hero.text = app.label
-            val size = dp(40)
-            val icon = app.icon.constantState?.newDrawable(resources)?.mutate() ?: app.icon
-            icon.setBounds(0, 0, size, size)
+            label.text = labelText
+            hero.text = title
+            dots.text = dotText
+            val icon = app?.let { a -> a.icon.constantState?.newDrawable(resources)?.mutate() ?: a.icon }
+            icon?.setBounds(0, 0, dp(40), dp(40))
             hero.setCompoundDrawablesRelative(icon, null, null, null)
             label.visibility = View.VISIBLE
             hero.visibility = View.VISIBLE
+            dots.visibility = if (dotText.isEmpty()) View.GONE else View.VISIBLE
+            if (art != null) {
+                val next = BitmapDrawable(resources, art)
+                val old = artView.drawable
+                artView.setImageDrawable(if (old != null && artView.visibility == View.VISIBLE)
+                    TransitionDrawable(arrayOf(old.let { if (it is TransitionDrawable) it.getDrawable(1) else it }, next)).apply {
+                        isCrossFadeEnabled = true
+                        startTransition(700)
+                    } else next)
+                if (scrim.background == null) scrim.background = GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(0xCC000000.toInt(), 0x66000000, 0x00000000))
+                artView.visibility = View.VISIBLE
+                scrim.visibility = View.VISIBLE
+            } else {
+                artView.visibility = View.GONE
+                scrim.visibility = View.GONE
+                artView.setImageDrawable(null)
+            }
+            hero.post { fitInk() }
+        }
+        hero.setOnClickListener { heroOpen?.invoke() }
+        hero.setOnFocusChangeListener { v, focused ->
+            v.pivotX = 0f
+            v.animate().scaleX(if (focused) 1.06f else 1f).scaleY(if (focused) 1.06f else 1f).setDuration(120).start()
         }
         if (first) {
             apply()
-            hero.post { fitInk() }
             return
         }
-        hero.animate().alpha(0f).setDuration(350).withEndAction {
-            if (isDestroyed) return@withEndAction
+        val parts = listOf(hero, label, dots)
+        for (v in parts) v.animate().alpha(0f).setDuration(300).start()
+        hero.postDelayed({
+            if (isDestroyed) return@postDelayed
             apply()
-            hero.animate().alpha(1f).setDuration(350).start()
-        }.start()
-        label.animate().alpha(0f).setDuration(350).withEndAction {
-            label.animate().alpha(0.7f).setDuration(350).start()
-        }.start()
+            hero.animate().alpha(1f).setDuration(300).start()
+            label.animate().alpha(0.7f).setDuration(300).start()
+            dots.animate().alpha(0.8f).setDuration(300).start()
+        }, 300)
     }
 
     // ---------- folder wallpapers ----------
@@ -5874,11 +6006,16 @@ class MainActivity : Activity() {
                 }
                 if (!prefs.contains("geo_lat")) return@execute
                 val now = getJson("https://api.open-meteo.com/v1/forecast?latitude=${prefs.getFloat("geo_lat", 0f)}" +
-                    "&longitude=${prefs.getFloat("geo_lon", 0f)}&current=temperature_2m,weather_code,is_day").getJSONObject("current")
-                prefs.edit()
-                    .putFloat("wx_temp", now.getDouble("temperature_2m").toFloat())
-                    .putInt("wx_code", now.getInt("weather_code"))
-                    .putBoolean("wx_day", now.optInt("is_day", 1) == 1)
+                    "&longitude=${prefs.getFloat("geo_lon", 0f)}&current=temperature_2m,weather_code,is_day&daily=weather_code,temperature_2m_max,temperature_2m_min&forecast_days=4&timezone=auto")
+                val daily = now.optJSONObject("daily")
+                val forecast = if (daily == null) "" else (0 until daily.getJSONArray("time").length()).joinToString(";") { i ->
+                    "${daily.getJSONArray("time").getString(i)},${daily.getJSONArray("weather_code").getInt(i)}," +
+                        "${daily.getJSONArray("temperature_2m_max").getDouble(i)},${daily.getJSONArray("temperature_2m_min").getDouble(i)}"
+                }
+                prefs.edit().putString("wx_fc", forecast)
+                    .putFloat("wx_temp", now.getJSONObject("current").getDouble("temperature_2m").toFloat())
+                    .putInt("wx_code", now.getJSONObject("current").getInt("weather_code"))
+                    .putBoolean("wx_day", now.getJSONObject("current").optInt("is_day", 1) == 1)
                     .putLong("wx_time", System.currentTimeMillis()).apply()
                 ui.post { if (!isDestroyed) showWeather() }
             } catch (e: Exception) {
@@ -5982,6 +6119,7 @@ class MainActivity : Activity() {
         val unit = prefs.getString("weather", "off")
         if (unit == "off" || !prefs.contains("wx_temp")) {
             view.visibility = View.GONE
+            findViewById<View>(R.id.forecast).visibility = View.GONE
             return
         }
         val c = prefs.getFloat("wx_temp", 0f)
@@ -5994,7 +6132,33 @@ class MainActivity : Activity() {
         view.setCompoundDrawablesRelative(icon, null, null, null)
         view.compoundDrawableTintList = ColorStateList.valueOf(view.currentTextColor)
         view.visibility = View.VISIBLE
+        showForecast(unit == "f")
         view.post { fitInk() }
+    }
+
+    /** "Nublado · Máx. 24° / Mín. 20°", and under it the next three days: "Mañana 25°/19° · sáb 24°/20° · dom 23°/19°". */
+    private fun showForecast(fahrenheit: Boolean) {
+        val view = findViewById<TextView>(R.id.forecast)
+        val days = prefs.getString("wx_fc", "").orEmpty().split(";").filter { it.isNotBlank() }.mapNotNull { row ->
+            val f = row.split(",")
+            if (f.size < 4) null else try { arrayOf(f[0], f[1], f[2], f[3]) } catch (e: Exception) { null }
+        }
+        if (days.isEmpty()) {
+            view.visibility = View.GONE
+            return
+        }
+        fun t(c: String) = Math.round(c.toFloat().let { if (fahrenheit) it * 9 / 5 + 32 else it })
+        val today = days[0]
+        val first = getString(R.string.forecast_today, weatherWord(today[1].toInt()), t(today[2]), t(today[3]))
+        val parse = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.ROOT)
+        val dayName = java.text.SimpleDateFormat("EEE", java.util.Locale("es"))
+        val next = days.drop(1).mapIndexed { i, d ->
+            val name = if (i == 0) getString(R.string.forecast_tomorrow) else
+                try { dayName.format(parse.parse(d[0])!!) } catch (e: Exception) { "" }
+            "$name ${t(d[2])}°/${t(d[3])}°"
+        }.joinToString(" · ")
+        view.text = if (next.isEmpty()) first else first + "\n" + next
+        view.visibility = View.VISIBLE
     }
 
     /** The same WMO codes as icons. Clear and partly cloudy have a night version. */

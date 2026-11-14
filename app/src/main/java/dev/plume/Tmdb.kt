@@ -71,6 +71,27 @@ internal object Tmdb {
             ?.let { "https://image.tmdb.org/t/p/original${it.getString("file_path")}" }
     }
 
+    /** One recommendation: a title and a wide picture of it. */
+    data class Pick(val title: String, val backdrop: String)
+
+    /** The movies and series a streaming service ([provider], a TMDB watch-provider id) has in [region], most popular first. */
+    fun popular(provider: Int, region: String, key: String, language: String): List<Pick> {
+        val out = ArrayList<Pick>()
+        for (type in listOf("movie", "tv")) {
+            val results = request("discover/$type?with_watch_providers=$provider&watch_region=$region" +
+                "&with_watch_monetization_types=flatrate&sort_by=popularity.desc&include_adult=false&language=$language", key)
+                ?.optJSONArray("results") ?: throw IOException("TMDB rejected the key")
+            for (i in 0 until minOf(results.length(), 8)) {
+                val item = results.getJSONObject(i)
+                val path = item.optString("backdrop_path")
+                val title = item.optString(if (type == "movie") "title" else "name")
+                if (title.isBlank() || !imagePath.matches(path)) continue
+                out += Pick(title, "https://image.tmdb.org/t/p/w1280$path")
+            }
+        }
+        return out
+    }
+
     private fun request(path: String, key: String): JSONObject? {
         val separator = if ('?' in path) '&' else '?'
         val connection = URL("https://api.themoviedb.org/3/$path${separator}api_key=$key").openConnection() as HttpURLConnection

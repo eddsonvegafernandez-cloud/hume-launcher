@@ -582,6 +582,7 @@ class MainActivity : Activity() {
         ui.post(wallpaperTick)
         updateFeatured()
         updateGreeting()
+        if (recos.isEmpty()) recosAt = 0 // a key may have been set in settings
         ui.removeCallbacks(heroTick)
         ui.post(heroTick)
         // Gallery chosen but its paintings missing (updated from a version that bundled them): fetch them.
@@ -1730,13 +1731,13 @@ class MainActivity : Activity() {
                 getString(R.string.n_on, wpSourceList().count { wpSourceOn(it.first) }) + "  ›", style = RowStyle(R.drawable.ms_filter_list, help = getString(R.string.help_wp_sources))) {
                 pickWpSources { returnToControl(R.string.wp_sources) }
             } else null,
-            if (current == ShowsWall.CHOICE) getString(R.string.tmdb_artwork) to settingsRow(getString(R.string.tmdb_artwork),
+            getString(R.string.tmdb_artwork) to settingsRow(getString(R.string.tmdb_artwork),
                 getString(if (Tmdb.key(this) == null) R.string.off else R.string.on) + "  ›",
                 style = RowStyle(R.drawable.ms_landscape, help = getString(R.string.tmdb_help))) {
                 configureTmdb { returnToControl(R.string.tmdb_artwork) }
-            } else null,
+            },
         )
-        val entryFocus = focusOn ?: extras.firstOrNull()?.first ?: groups.first().second.first().name
+        val entryFocus = focusOn ?: extras.firstOrNull { it.first != getString(R.string.tmdb_artwork) }?.first ?: groups.first().second.first().name
         wallGrid(getString(R.string.wallpaper), groups, forDark, current, entryFocus, extras) { renderSettings(WALLPAPER_CARD) }
     }
 
@@ -2467,8 +2468,6 @@ class MainActivity : Activity() {
     @Volatile private var recos = emptyList<Reco>()
     @Volatile private var recosAt = 0L
     private var recoAt = 0
-    private var heroOrder = emptyList<String>() // fallback: installed apps, when no app published art
-    private var heroAt = 0
     private var heroOpen: (() -> Unit)? = null
     private val heroArtCache = object : LruCache<String, Bitmap>(14 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap) = value.byteCount
@@ -2522,6 +2521,18 @@ class MainActivity : Activity() {
                 }
             }
         }
+        // Streaming apps that publish nothing: their popular titles from TMDB, when a key is set (Wallpaper settings).
+        val key = Tmdb.key(this)
+        if (key != null) for ((pkg, provider) in STREAMING) {
+            val app = labels[pkg] ?: continue
+            val list = perApp.getOrPut(pkg) { ArrayList() }
+            if (list.size >= 8) continue
+            try {
+                for (pick in Tmdb.popular(provider, RECO_REGION, key, RECO_LANGUAGE).take(8)) list += Reco(pick.title, pick.backdrop, null, pkg, app)
+            } catch (e: Exception) {
+                android.util.Log.w("Plume", "TMDB picks for $pkg failed ($e)")
+            }
+        }
         // One app after another, so a single app with many rows cannot fill the whole carousel.
         val lists = perApp.values.shuffled().map { it.shuffled() }
         val out = ArrayList<Reco>()
@@ -2538,49 +2549,38 @@ class MainActivity : Activity() {
         val hero = findViewById<TextView>(R.id.hero)
         val dots = findViewById<TextView>(R.id.heroDots)
         val list = recos
-        val installed = apps
-        if (list.isNotEmpty()) {
-            val r = list[recoAt % list.size]
-            recoAt++
-            val app = installed.firstOrNull { it.pkg == r.pkg }
-            val n = minOf(list.size, 8)
-            val at = (recoAt - 1) % list.size
-            val dotText = (0 until n).joinToString(" ") { if (it == at % n) "●" else "○" }
-            heroOpen = {
-                try {
-                    startActivity(Intent.parseUri(r.intent, Intent.URI_INTENT_SCHEME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                } catch (e: Exception) {
-                    app?.let { startActivity(it.launch) }
-                }
-            }
-            val image = r.image
-            if (image == null) return swapHero(getString(R.string.hero_label_in, r.app), r.title, dotText, app, null)
-            val cached = heroArtCache.get(image)
-            if (cached != null) return swapHero(getString(R.string.hero_label_in, r.app), r.title, dotText, app, cached)
-            posterIo.execute {
-                val bmp = try { decode(image, wide = 1280, config = Bitmap.Config.ARGB_8888) } catch (e: Exception) { null }
-                if (bmp != null) heroArtCache.put(image, bmp)
-                ui.post {
-                    if (!isDestroyed && resumed) swapHero(getString(R.string.hero_label_in, r.app), r.title, dotText, app, bmp)
-                }
-            }
-            return
-        }
-        // No app has published art: cycle through the installed apps, name and icon only.
-        if (installed.isEmpty()) {
+        if (list.isEmpty()) { // nothing to recommend: no app names instead, the corner stays empty
             for (v in listOf(label, hero, dots)) v.visibility = View.GONE
+            if (heroArtOn()) {
+                findViewById<ImageView>(R.id.heroArt).visibility = View.GONE
+                findViewById<View>(R.id.heroScrim).visibility = View.GONE
+                hero.post { fitInk() }
+            }
             return
         }
-        val known = installed.map { it.pkg }.toSet()
-        if (heroOrder.isEmpty() || heroAt >= heroOrder.size || heroOrder.any { it !in known }) {
-            heroOrder = installed.map { it.pkg }.shuffled()
-            heroAt = 0
+        val r = list[recoAt % list.size]
+        recoAt++
+        val app = apps.firstOrNull { it.pkg == r.pkg }
+        val n = minOf(list.size, 8)
+        val at = (recoAt - 1) % list.size
+        val dotText = (0 until n).joinToString(" ") { if (it == at % n) "●" else "○" }
+        heroOpen = {
+            try {
+                val intent = r.intent?.let { Intent.parseUri(it, Intent.URI_INTENT_SCHEME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) } ?: app?.launch
+                if (intent != null) startActivity(intent)
+            } catch (e: Exception) {
+                app?.let { startActivity(it.launch) }
+            }
         }
-        val app = installed.firstOrNull { it.pkg == heroOrder[heroAt] }
-        heroAt++
-        if (app == null) return
-        heroOpen = { startActivity(app.launch) }
-        swapHero(getString(R.string.hero_label), app.label, "", app, null)
+        val text = getString(R.string.hero_label_in, r.app)
+        val image = r.image ?: return swapHero(text, r.title, dotText, app, null)
+        val cached = heroArtCache.get(image)
+        if (cached != null) return swapHero(text, r.title, dotText, app, cached)
+        posterIo.execute {
+            val bmp = try { decode(image, wide = 1280, config = Bitmap.Config.ARGB_8888) } catch (e: Exception) { null }
+            if (bmp != null) heroArtCache.put(image, bmp)
+            ui.post { if (!isDestroyed && resumed) swapHero(text, r.title, dotText, app, bmp) }
+        }
     }
 
     /** Puts the next recommendation on screen: the art fades in behind the text, the text fades out and in. */
@@ -7145,6 +7145,19 @@ class MainActivity : Activity() {
         const val CHOSEN = "✓"
         const val REPO = "aradhyas8/Plume_Launcher"
         const val UPDATES_ON = false
+        const val RECO_REGION = "PE" // where "popular now" is measured
+        const val RECO_LANGUAGE = "es-MX"
+        /** Streaming apps on Android TV -> their id at TMDB (watch providers). Only the ones installed are used. */
+        val STREAMING = mapOf(
+            "com.netflix.ninja" to 8, "com.netflix.mediaclient" to 8,
+            "com.amazon.amazonvideo.livingroom" to 119,
+            "com.disney.disneyplus" to 337,
+            "com.wbd.stream" to 1899, "com.hbo.hbonow" to 384,
+            "com.apple.atve.androidtv.appletv" to 350,
+            "com.cbs.ott" to 531, "com.cbs.app" to 531,
+            "com.crunchyroll.crunchyroid" to 283,
+            "com.hulu.livingroomplus" to 15,
+        )
         const val HERO_EVERY_MS = 6000L // how long each recommended app stays on screen
         const val UPDATE_STATUS = "dev.plume.UPDATE_STATUS"
         const val WRITE_EPG ="com.android.providers.tv.permission.WRITE_EPG_DATA"
